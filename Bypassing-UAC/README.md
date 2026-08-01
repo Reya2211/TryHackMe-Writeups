@@ -207,11 +207,12 @@ Cleanup:
 reg delete "HKCU\Software\Classes\.thm\" /f
 reg delete "HKCU\Software\Classes\ms-settings\" /f
 ```
-**Questions**
+ **Questions**
 
 **What flag is returned by running the fodhelper-curver exploit?**
 
 **Answer:** `THM{AV_UAC_BYPASS_4_ALL}`
+
 ---
 
 ## Task 6 — UAC: Environment Variable Expansion
