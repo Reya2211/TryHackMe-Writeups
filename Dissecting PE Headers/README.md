@@ -319,11 +319,11 @@ This field contains flags describing properties of the PE, such as whether it is
 
 | Question                                                       | Answer                        |
 | -------------------------------------------------------------- | ----------------------------- |
-| In the attached VM, there is a file                            |                               |
-| Desktop\Samples\zmsuz3pinwl. Open this file in pe-tree.        | `32-bit machine`              |
-| Is this PE file compiled for a 32-bit machine or a 64-bit      |                               |
-| machine?                                                       |                               |
-|                                                                |                               |                                
+| In the attached VM, there is a file                                                            |
+| Desktop\Samples\zmsuz3pinwl. Open this file in pe-tree.        |  `32-bit machine`             |
+| Is this PE file compiled for a 32-bit machine or a 64-bit                                      |
+| machine?                                                                                       |
+|                                                                                                |                                
 | Timestamp of the file                                          | `Wed Mar 9 12:27:49 2022 UTC` |
 
 ---
