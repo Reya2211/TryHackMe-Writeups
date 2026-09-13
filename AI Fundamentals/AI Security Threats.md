@@ -36,9 +36,6 @@ The key objectives are to understand:
 * How defenders can use AI for security operations
 * How AI systems should be secured throughout their lifecycle
 
-### Completion
-
-**Answer:** `I'm ready to learn about AI/ML security threats!`
 
 ---
 
@@ -199,7 +196,6 @@ The relevant categories were:
 | Deepfake                       | Replicates a person's appearance or voice |
 | AI-assisted social engineering | Enables more personalised manipulation    |
 
-**Result:** Completed.
 
 ---
 
@@ -277,7 +273,6 @@ AEGIS was used to consolidate the available investigation information into a con
 
 The final step involved asking the AI assistant what additional threats might exist based on the observed activity.
 
-**Result:** Completed.
 
 ---
 
@@ -377,7 +372,6 @@ It combines concepts from the AI Fundamentals rooms and tests understanding of:
 * Defensive AI
 * Secure AI adoption
 
-**Result:** Completed.
 
 ---
 
